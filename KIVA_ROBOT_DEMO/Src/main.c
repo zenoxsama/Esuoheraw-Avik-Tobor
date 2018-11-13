@@ -30,13 +30,14 @@ void TEST_KIVA_MOTION(void);
 void CONTROL_KIVA_MOTION(uint8_t command, double PID_value);
 void BACKWARD_KIVA_ROBOT(uint16_t duty_cycle_L, uint16_t duty_cycle_R, uint8_t time_Delay);
 void FORWARD_KIVA_ROBOT(uint16_t duty_cycle_L, uint16_t duty_cycle_R);
-void TURNLEFT_KIVA_ROBOT(uint16_t duty_cycle_L, uint16_t duty_cycle_R, uint8_t time_Delay);
-void TURNRIGHT_KIVA_ROBOT(uint16_t duty_cycle_L, uint16_t duty_cycle_R, uint8_t time_Delay);
+void TURNLEFT_KIVA_ROBOT(uint16_t duty_cycle_L, uint16_t duty_cycle_R);
+void TURNRIGHT_KIVA_ROBOT(uint16_t duty_cycle_L, uint16_t duty_cycle_R);
 void STOP_KIVA_ROBOT(void);
 void SET_ANGLE_KIVA_ROBOT(signed int angle);
 void PROCESS_UART_PI3(void);
 void GOAHEAD_KIVA_ROBOT(void);
-
+void HAL_Delay_test_goahead(__IO uint32_t Delay);
+void HAL_Delay_test_angle(__IO uint32_t Delay, signed int angle);
 
 // Internal variables
 //2250 pudges for 90*
@@ -51,9 +52,14 @@ uint16_t MOTOR_STEP = 839;
 #define Kd 5
 #define Ki 0.01
 //PID setting for encoder control
-#define Kpe 10
-#define Kde 0
-#define Kie 0
+#define Kpe 15
+#define Kde 2.5 //2.2
+#define Kie 0.05 //1
+
+//PID setting for rotating angle
+#define Kpa 10
+#define Kda 2
+#define Kia 0
 
 #define MOTOR_SPEED_MAX 8400
 #define MOTOR_SPEED_MIN 1
@@ -74,6 +80,11 @@ double previous_error=0, previous_I=0;
 double error_Encoder=0, Pe=0, Ie=0, De=0; 
 double previous_error_Encoder =0, previous_Ie=0;	
 
+double error_Angle =0, Pa =0, Ia =0, Da =0; 
+double previous_error_Angle =0, previous_Ia=0;
+
+uint16_t tick =0;
+
 enum KIVA_MOTION_STATE
 {
 	FORWARD = 0,
@@ -81,7 +92,8 @@ enum KIVA_MOTION_STATE
 	TURNLEFT,
 	TURNRIGHT,
 	STOP,
-	ANGLE
+	ANGLE,
+	GOAHEAD
 };
 
 int main(void)
@@ -121,8 +133,26 @@ int main(void)
 //			
 //			speed_PID = PROCESS_PID_CONTROL(error);
 //			CONTROL_KIVA_MOTION(receive[0], 0);
-//			SET_ANGLE_KIVA_ROBOT(90);
-			GOAHEAD_KIVA_ROBOT();
+			TIM1->CNT = 0;
+			TIM2->CNT = 0;
+			HAL_Delay_test_goahead(5000);
+		//	HAL_TIM_Encoder_Stop(&htim1, TIM_CHANNEL_ALL);
+		//	HAL_TIM_Encoder_Stop(&htim2, TIM_CHANNEL_ALL);
+			
+			STOP_KIVA_ROBOT();
+			HAL_Delay(1000);
+				TIM1->CNT = 0;
+				TIM2->CNT = 0;
+			//	SET_ANGLE_KIVA_ROBOT(50);
+			
+//			tick = HAL_GetTick();
+			HAL_Delay_test_angle(2000, 60);
+			STOP_KIVA_ROBOT();
+			HAL_Delay(1000);			
+	//		HAL_TIM_Encoder_Stop(&htim1, TIM_CHANNEL_ALL);
+		//	HAL_TIM_Encoder_Stop(&htim2, TIM_CHANNEL_ALL);
+		//	STOP_KIVA_ROBOT();
+
 		}
 
 }
@@ -163,29 +193,131 @@ void TEST_KIVA_MOTION(void)
 		HAL_Delay(5000);
 }
 
+//delay
+void HAL_Delay_test_goahead(__IO uint32_t Delay)
+{
+  uint32_t tickstart = HAL_GetTick();
+  uint32_t wait = Delay;
+  
+  /* Add a period to guarantee minimum wait */
+  if (wait < HAL_MAX_DELAY)
+  {
+     wait++;
+  }
+  
+  while((HAL_GetTick() - tickstart) < wait)
+  {
+		GOAHEAD_KIVA_ROBOT();
+  }
+}
+void HAL_Delay_test_angle(__IO uint32_t Delay, signed int angle)
+{
+  uint32_t tickstart = HAL_GetTick();
+  uint32_t wait = Delay;
+  
+  /* Add a period to guarantee minimum wait */
+  if (wait < HAL_MAX_DELAY)
+  {
+     wait++;
+  }
+  
+  while((HAL_GetTick() - tickstart) < wait)
+  {
+		SET_ANGLE_KIVA_ROBOT(angle);
+  }
+}
 //ANGLE
 void SET_ANGLE_KIVA_ROBOT(signed int angle)
 {
-	HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL);
-	HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
-	if(angle > 0)
-		{
-			uint16_t count = (angle * ROTAGE_BASE_ANGLE)/90;
-			while(countL < count)
+		HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL);
+		HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
+	//Read encoder feedback
+		countL = TIM1->CNT;
+		countR = TIM2->CNT;
+	//Set motor speed
+	//Adjust encoder pulse since A rotates B 90* 
+		if(angle > 5) // Turn Right
+			{
+				countR = 0xFFFF - countR;
+			}
+		else if(angle < - 5)// Turn Left
+			{
+				countL = 0xFFFF - countL;
+			}
+		else
+			{		
+
+			}//Forward
+		error_Angle = countL - countR;
+		Pa = error_Angle;
+		Ia = Ia + error_Angle;
+		Da = error_Angle - previous_error_Angle;		
+		HAL_Delay(10);
+		double adjust_PID = Kpa*Pa + Kia*Ia + Kda*Da;
+		previous_error_Angle = error_Angle;	
+		//Control motors and speed
+		if(angle > 5) // Turn Right
+			{
+				if (1500 > error_Angle > 0)
 				{
-					countL = TIM1->CNT;
-					countR = TIM2->CNT;
-					//TURNLEFT_KIVA_ROBOT(MOTOR_BASE_SPEED, MOTOR_BASE_SPEED, 0);
-					BACKWARD_KIVA_ROBOT(MOTOR_BASE_SPEED, MOTOR_BASE_SPEED,0);
+					PWM_DUTY_R1 = MOTOR_BASE_SPEED + adjust_PID;
+					PWM_DUTY_L1 = MOTOR_BASE_SPEED - adjust_PID;
 				}
-			HAL_TIM_Encoder_Stop(&htim1, TIM_CHANNEL_ALL);
-			HAL_TIM_Encoder_Stop(&htim2, TIM_CHANNEL_ALL);
-			STOP_KIVA_ROBOT();
-		}
-	else
-		{
-			
-		}
+				else if(-1500 < error_Angle < 0)
+				{
+					PWM_DUTY_R1 = MOTOR_BASE_SPEED - adjust_PID;
+					PWM_DUTY_L1 = MOTOR_BASE_SPEED + adjust_PID;
+				}
+				else
+				{
+					PWM_DUTY_R1 = MOTOR_BASE_SPEED;
+					PWM_DUTY_L1 = MOTOR_BASE_SPEED;
+				}
+				TURNRIGHT_KIVA_ROBOT(PWM_DUTY_L1, PWM_DUTY_R1);
+			}
+		else if(angle < - 5)// Turn Left
+			{
+				if (1500 > error_Angle > 0)
+				{
+					PWM_DUTY_R1 = MOTOR_BASE_SPEED + adjust_PID;
+					PWM_DUTY_L1 = MOTOR_BASE_SPEED - adjust_PID;
+				}
+				else if(-1500 < error_Angle < 0)
+				{
+					PWM_DUTY_R1 = MOTOR_BASE_SPEED - adjust_PID;
+					PWM_DUTY_L1 = MOTOR_BASE_SPEED + adjust_PID;
+				}
+				else
+				{
+					PWM_DUTY_R1 = MOTOR_BASE_SPEED;
+					PWM_DUTY_L1 = MOTOR_BASE_SPEED;
+				}
+				TURNLEFT_KIVA_ROBOT(PWM_DUTY_L1, PWM_DUTY_R1);
+			}
+		else
+			{
+					PWM_DUTY_R1 = MOTOR_BASE_SPEED;
+					PWM_DUTY_L1 = MOTOR_BASE_SPEED;
+			}
+			HAL_Delay(50);//Forward
+//	if(angle > 0)
+//		{
+//			uint16_t count = (angle * ROTAGE_BASE_ANGLE)/90;
+//			while(countL < count)
+//				{
+//					countL = TIM1->CNT;
+//					countR = TIM2->CNT;
+//					//TURNLEFT_KIVA_ROBOT(MOTOR_BASE_SPEED, MOTOR_BASE_SPEED, 0);
+//					BACKWARD_KIVA_ROBOT(MOTOR_BASE_SPEED, MOTOR_BASE_SPEED,0);
+//				}
+//			HAL_TIM_Encoder_Stop(&htim1, TIM_CHANNEL_ALL);
+//			HAL_TIM_Encoder_Stop(&htim2, TIM_CHANNEL_ALL);
+//			STOP_KIVA_ROBOT();
+//		}
+//	else
+//		{
+//			
+//		}
 }
 //PID processing
 double PROCESS_PID_CONTROL (signed int PID_error)
@@ -224,6 +356,14 @@ void CONTROL_KIVA_MOTION(uint8_t command, double PID_value)
 				
 				break;
 			}
+		case GOAHEAD:
+			{
+				GOAHEAD_KIVA_ROBOT();
+				//Stop encoder timer
+				HAL_TIM_Encoder_Stop(&htim1, TIM_CHANNEL_ALL);
+				HAL_TIM_Encoder_Stop(&htim2, TIM_CHANNEL_ALL);
+				break;
+			}
 		case STOP:
 			{
 				STOP_KIVA_ROBOT();
@@ -239,6 +379,9 @@ void CONTROL_KIVA_MOTION(uint8_t command, double PID_value)
 
 void FORWARD_KIVA_ROBOT(uint16_t duty_cycle_L, uint16_t duty_cycle_R)
 {
+		if(duty_cycle_L > MOTOR_SPEED_MAX - 1) duty_cycle_L = MOTOR_SPEED_MAX - 1;
+		if(duty_cycle_R > MOTOR_SPEED_MAX - 1) duty_cycle_R = MOTOR_SPEED_MAX - 1;
+	
 		__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, duty_cycle_L);
 		__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, MOTOR_SPEED_MIN - 1);
 		__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_3, duty_cycle_R);
@@ -258,7 +401,7 @@ void GOAHEAD_KIVA_ROBOT(void)
 		
 		Pe = error_Encoder;
 		Ie = Ie + error_Encoder;
-		De = previous_error_Encoder - error_Encoder;
+		De = error_Encoder - previous_error_Encoder;
 	
 		double adjust_PID = Kpe*Pe + Kie*Ie + Kde*De;
 		previous_error_Encoder = error_Encoder;
@@ -296,23 +439,23 @@ void BACKWARD_KIVA_ROBOT(uint16_t duty_cycle_L, uint16_t duty_cycle_R, uint8_t t
 		HAL_Delay(time_Delay*1000);
 }
 
-void TURNLEFT_KIVA_ROBOT(uint16_t duty_cycle_L, uint16_t duty_cycle_R, uint8_t time_Delay)
+void TURNLEFT_KIVA_ROBOT(uint16_t duty_cycle_L, uint16_t duty_cycle_R)
 {
+		if(duty_cycle_L > MOTOR_SPEED_MAX - 1) duty_cycle_L = MOTOR_SPEED_MAX - 1;
+		if(duty_cycle_R > MOTOR_SPEED_MAX - 1) duty_cycle_R = MOTOR_SPEED_MAX - 1;
 		__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, MOTOR_SPEED_MIN - 1);
 		__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, duty_cycle_L);
 		__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_3, duty_cycle_R);
 		__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_4, MOTOR_SPEED_MIN - 1);
-		
-		HAL_Delay(time_Delay*1000);
 }
-void TURNRIGHT_KIVA_ROBOT(uint16_t duty_cycle_L, uint16_t duty_cycle_R, uint8_t time_Delay)
+void TURNRIGHT_KIVA_ROBOT(uint16_t duty_cycle_L, uint16_t duty_cycle_R)
 {
+		if(duty_cycle_L > MOTOR_SPEED_MAX - 1) duty_cycle_L = MOTOR_SPEED_MAX - 1;
+		if(duty_cycle_R > MOTOR_SPEED_MAX - 1) duty_cycle_R = MOTOR_SPEED_MAX - 1;
 		__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, duty_cycle_L);
 		__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, MOTOR_SPEED_MIN - 1);
 		__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_3, MOTOR_SPEED_MIN - 1);
 		__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_4, duty_cycle_R);
-		
-		HAL_Delay(time_Delay*1000);
 }
 
 void STOP_KIVA_ROBOT(void)
